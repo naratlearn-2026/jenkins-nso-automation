@@ -5,8 +5,17 @@ pipeline {
         }
     }
 
+    triggers {
+        cron('H/30 * * * *')
+    }
+
     environment {
         NSO_BASE_URL = 'http://192.168.68.101:8080/restconf/data'
+    }
+
+    options {
+        disableConcurrentBuilds()
+        timestamps()
     }
 
     stages {
@@ -27,7 +36,7 @@ pipeline {
             }
         }
 
-        stage('NSO Device Validation') {
+        stage('NSO Health Validation') {
             environment {
                 API_CREDS = credentials('api-creds')
             }
@@ -44,10 +53,10 @@ pipeline {
 
     post {
         success {
-            echo 'NSO device validation passed'
+            echo 'NSO health check passed'
         }
         failure {
-            echo 'NSO device validation failed'
+            echo 'NSO health check FAILED'
         }
     }
 }
