@@ -1,0 +1,7 @@
+{
+  "example-service:example-service": {
+    "name": "jenkins-test-service",
+    "param": "value"
+  }
+}
+
