@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import requests
 
 NSO_BASE_URL = os.getenv("NSO_BASE_URL")
@@ -16,28 +17,46 @@ HEADERS = {
     "Content-Type": "application/yang-data+json"
 }
 
+# Retry parameters
+MAX_RETRIES = 3
+RETRY_DELAY = 5  # seconds
+
+def get_with_retry(url, description):
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            print(f"{description} (attempt {attempt}/{MAX_RETRIES})")
+            resp = requests.get(
+                url,
+                auth=AUTH,
+                headers=HEADERS,
+                timeout=(10, 60),  # connect, read
+                stream=True,
+                verify=False
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.RequestException as e:
+            print(f"WARNING: {description} failed: {e}")
+            if attempt < MAX_RETRIES:
+                print(f"Retrying in {RETRY_DELAY}s...\n")
+                time.sleep(RETRY_DELAY)
+            else:
+                print("ERROR: Exhausted retries")
+                raise
+
 # -------------------------------------------------
-# STEP 1: Inventory & operational state validation
+# STEP 1: Inventory validation
 # -------------------------------------------------
 
 inventory_url = f"{NSO_BASE_URL}/tailf-ncs:devices/device"
 print(f"\n[1/2] Querying NSO device inventory")
 print(f"URL: {inventory_url}")
 
-resp = requests.get(
-    inventory_url,
-    auth=AUTH,
-    headers=HEADERS,
-    timeout=15,
-    verify=False
-)
-
-if resp.status_code != 200:
-    print(f"ERROR: Failed to fetch device inventory (HTTP {resp.status_code})")
-    print(resp.text)
+try:
+    data = get_with_retry(inventory_url, "Fetching device inventory")
+except Exception:
     sys.exit(1)
 
-data = resp.json()
 devices = data.get("tailf-ncs:device", [])
 
 if not devices:
@@ -45,8 +64,6 @@ if not devices:
     sys.exit(1)
 
 print(f"Found {len(devices)} device(s)\n")
-
-inventory_failed = False
 
 for dev in devices:
     name = dev.get("name")
@@ -60,45 +77,46 @@ for dev in devices:
 
     if admin != "unlocked" or oper not in ("enabled", "up"):
         print("  ❌ Inventory validation FAILED\n")
-        inventory_failed = True
+        sys.exit(1)
     else:
         print("  ✅ Inventory validation OK\n")
-
-if inventory_failed:
-    print("Inventory validation failed — stopping pipeline")
-    sys.exit(1)
 
 print("Inventory validation passed\n")
 
 # -------------------------------------------------
-# STEP 2: Authoritative sync check (action)
+# STEP 2: check-sync (authoritative)
 # -------------------------------------------------
 
 check_sync_url = f"{NSO_BASE_URL}/../operations/tailf-ncs:devices/check-sync"
 print("[2/2] Running NSO check-sync operation")
 print(f"URL: {check_sync_url}")
 
-resp = requests.post(
-    check_sync_url,
-    auth=AUTH,
-    headers=HEADERS,
-    timeout=30,
-    verify=False
-)
+for attempt in range(1, MAX_RETRIES + 1):
+    try:
+        resp = requests.post(
+            check_sync_url,
+            auth=AUTH,
+            headers=HEADERS,
+            timeout=(10, 90),
+            verify=False
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        break
+    except requests.exceptions.RequestException as e:
+        print(f"WARNING: check-sync failed: {e}")
+        if attempt < MAX_RETRIES:
+            print(f"Retrying in {RETRY_DELAY}s...\n")
+            time.sleep(RETRY_DELAY)
+        else:
+            print("ERROR: check-sync failed after retries")
+            sys.exit(1)
 
-if resp.status_code != 200:
-    print(f"ERROR: check-sync failed (HTTP {resp.status_code})")
-    print(resp.text)
-    sys.exit(1)
-
-data = resp.json()
 results = data.get("tailf-ncs:output", {}).get("sync-result", [])
 
 if not results:
     print("ERROR: No sync results returned")
     sys.exit(1)
-
-sync_failed = False
 
 print(f"\nReceived sync results for {len(results)} device(s)\n")
 
@@ -111,14 +129,9 @@ for r in results:
 
     if result != "in-sync":
         print("  ❌ Device out-of-sync\n")
-        sync_failed = True
+        sys.exit(1)
     else:
         print("  ✅ Device in-sync\n")
 
-if sync_failed:
-    print("One or more devices are out-of-sync")
-    sys.exit(1)
-
-print("All devices are in-sync")
-print("\nNSO device validation completed successfully")
+print("\nNSO health validation completed successfully")
 
