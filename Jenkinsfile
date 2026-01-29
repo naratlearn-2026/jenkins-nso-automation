@@ -10,7 +10,7 @@ pipeline {
     }
 
     environment {
-        NSO_BASE_URL = 'http://192.168.68.101:8080/restconf/data'
+        NSO_BASE_URL = 'http://192.168.68.103:8080/restconf/data'
     }
 
     options {
